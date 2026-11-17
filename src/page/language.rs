@@ -166,13 +166,29 @@ impl super::Page for Page {
 
             let registry = locales_rs::Registry::new().wrap_err("failed to get locale registry")?;
 
-            let system_locales: BTreeMap<String, SystemLocale> =
-                locale1_zbus::locale1Proxy::new(conn)
+            // Without a locale1 provider (non-systemd), fall back to the environment
+            // instead of aborting the whole page refresh.
+            let locale_expressions: Vec<String> = match async {
+                locale1::locale1Proxy::new(&conn)
                     .await
                     .wrap_err("locale1 proxy connect error")?
                     .locale()
                     .await
-                    .wrap_err("could not get locale from locale1")?
+                    .wrap_err("could not get locale from locale1")
+            }
+            .await
+            {
+                Ok(expressions) => expressions,
+                Err(why) => {
+                    tracing::warn!(?why, "locale1 unavailable, using environment locale");
+                    ["LANG", "LC_ALL", "LC_TIME"]
+                        .iter()
+                        .filter_map(|var| std::env::var(var).ok().map(|val| format!("{var}={val}")))
+                        .collect()
+                }
+            };
+
+            let system_locales: BTreeMap<String, SystemLocale> = locale_expressions
                     .into_iter()
                     .filter_map(|expression| {
                         let mut fields = expression.split('=');
